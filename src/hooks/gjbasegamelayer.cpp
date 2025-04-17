@@ -386,7 +386,7 @@ void GlobedGJBGL::setupUpdate() {
 
         auto levelId = HookedGJGameLevel::getLevelIDFrom(self->m_level);
 
-        nm.send(LevelJoinPacket::create(levelId, self->m_level->m_unlisted));
+        nm.send(LevelJoinPacket::create(levelId, self->m_level->m_unlisted, std::nullopt));
 
         self->rescheduleSelectors();
         self->getParent()->schedule(schedule_selector(GlobedGJBGL::selUpdate), 0.f);
@@ -403,12 +403,7 @@ void GlobedGJBGL::setupMisc() {
     fields.isVoiceProximity = m_level->isPlatformer() ? settings.communication.voiceProximity : settings.communication.classicProximity;
 
     // set the configured tps
-    auto tpsCap = settings.globed.tpsCap;
-    if (tpsCap != 0) {
-        fields.configuredTps = std::min(nm.getServerTps(), (uint32_t)tpsCap);
-    } else {
-        fields.configuredTps = nm.getServerTps();
-    }
+    fields.configuredTps = nm.getServerTps();
 
     // interpolator
     fields.interpolator = std::make_unique<PlayerInterpolator>(InterpolatorSettings {
@@ -431,6 +426,9 @@ void GlobedGJBGL::setupMisc() {
     // friendlist stuff
     auto& flm = FriendListManager::get();
     flm.maybeLoad();
+
+    // refresh keybinds
+    KeybindsManager::get().refreshBinds();
 
     // vmt hook
 #ifdef GEODE_IS_WINDOWS
@@ -709,17 +707,13 @@ void GlobedGJBGL::selUpdate(float timescaledDt) {
 
         auto frameFlags = fields.interpolator->swapFrameFlags(playerId);
 
-        if (fields.arePlayersHidden) {
-            vstate.player1.isVisible = false;
-            vstate.player2.isVisible = false;
-        }
-
         bool isSpeaking = vpm.isSpeaking(playerId);
         remotePlayer->updateData(
             vstate,
             frameFlags,
             isSpeaking,
-            isSpeaking ? vpm.getLoudness(playerId) : 0.f
+            isSpeaking ? vpm.getLoudness(playerId) : 0.f,
+            fields.arePlayersHidden
         );
 
         // update progress icons
@@ -750,8 +744,8 @@ void GlobedGJBGL::selUpdate(float timescaledDt) {
 
     // update self names
     if (fields.ownNameLabel) {
-        auto dirVec = GlobedGJBGL::getCameraDirectionVector();
-        auto dir = GlobedGJBGL::getCameraDirectionAngle();
+        auto dirVec = this->getCameraDirectionVector();
+        auto dir = this->getCameraDirectionAngle();
 
         if (self->m_player1->m_isHidden || !self->m_player1->isVisible()) {
             fields.ownNameLabel->setVisible(false);
@@ -917,15 +911,18 @@ PlayerMetadata GlobedGJBGL::gatherPlayerMetadata() {
 }
 
 CCPoint GlobedGJBGL::getCameraDirectionVector() {
-    float dir = GlobedGJBGL::getCameraDirectionAngle();
-    float rads = CC_DEGREES_TO_RADIANS(dir);
+    float dir = this->getCameraDirectionAngle();
+    float rads = dir * M_PI / 180.f; // convert degrees to radians
     return CCPoint{std::sin(rads), std::cos(rads)};
 }
 
 float GlobedGJBGL::getCameraDirectionAngle() {
     bool rotateNames = GlobedSettings::get().players.rotateNames;
-    float dir = GJBaseGameLayer::get() && rotateNames ? -GJBaseGameLayer::get()->m_gameState.m_cameraAngle : 0;
-    return dir;
+    if (!rotateNames) {
+        return 0.f;
+    }
+
+    return -m_gameState.m_cameraAngle;
 }
 
 bool GlobedGJBGL::shouldLetMessageThrough(int playerId) {
@@ -1068,6 +1065,10 @@ void GlobedGJBGL::handlePlayerJoin(int playerId) {
     this->updateCustomItem(globed::ITEM_TOTAL_PLAYERS, fields.players.size() + 1);
 #endif
 
+    for (auto& cb : fields.playerJoinCallbacks) {
+        cb(playerId, rp->player1->getPlayerObject(), rp->player2->getPlayerObject());
+    }
+
     GLOBED_EVENT(this, onPlayerJoin(rp));
 }
 
@@ -1079,6 +1080,10 @@ void GlobedGJBGL::handlePlayerLeave(int playerId) {
     if (!fields.players.contains(playerId)) return;
 
     auto rp = fields.players.at(playerId);
+
+    for (auto& cb : fields.playerLeaveCallbacks) {
+        cb(playerId, rp->player1->getPlayerObject(), rp->player2->getPlayerObject());
+    }
 
     GLOBED_EVENT(this, onPlayerLeave(rp));
 
@@ -1366,6 +1371,14 @@ void GlobedGJBGL::explodeRandomPlayer() {
     std::advance(it, util::rng::Random::get().generate<size_t>(0, fields.players.size() - 1));
 
     auto* player = it->second;
+}
+
+void GlobedGJBGL::addPlayerJoinCallback(globed::callbacks::PlayerJoinFn fn) {
+    this->getFields().playerJoinCallbacks.push_back(std::move(fn));
+}
+
+void GlobedGJBGL::addPlayerLeaveCallback(globed::callbacks::PlayerLeaveFn fn) {
+    this->getFields().playerLeaveCallbacks.push_back(std::move(fn));
 }
 
 void GlobedGJBGL::setPlayerVisibility(bool enabled) {

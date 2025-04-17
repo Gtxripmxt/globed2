@@ -19,6 +19,13 @@ option(GLOBED_OSS_BUILD "Open source build that does not require closed-source d
 option(GLOBED_NATIVE_ARCH "Native architecture build" OFF)
 option(GLOBED_DEBUG "Debug mode" OFF)
 option(GLOBED_RELEASE "Release build" OFF)
+option(GLOBED_DISABLE_VOICE_SUPPORT "Disable voice chat support" OFF)
+option(GLOBED_DEBUG_INTERPOLATION "Dump interpolation logs" OFF)
+option(GLOBED_DEBUG_PACKETS "Log all incoming & outgoing packets and bandwidth" OFF)
+option(GLOBED_DEBUG_PACKETS_PRINT "Print every incoming/outgoing packet" OFF)
+option(GLOBED_LESS_BINDINGS "Disable extra hooks & calls to some GD functions, useful when porting to a new GD version" OFF)
+option(GLOBED_GP_CHANGES "a" OFF)
+option(GLOBED_LINK_TO_FMOD "Whether to link to FMOD, disables voice chat if off" ON)
 
 # on windows use precompiled, on other platforms compile libsodium
 if (WIN32)
@@ -27,6 +34,7 @@ else()
     option(GLOBED_COMPILE_LIBS "Don't use precompiled libraries and compile manually" ON)
 endif()
 
+# detect compile environment, set debug flags (GLOBED_IS_DEBUG)
 include(cmake/environment.cmake)
 
 # Add platform-specific sources
@@ -63,6 +71,43 @@ file(GLOB_RECURSE SOURCES
 )
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
+
+# custom options
+if (GLOBED_DISABLE_VOICE_SUPPORT)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_DISABLE_VOICE_SUPPORT=1)
+endif()
+
+if (GLOBED_DEBUG_INTERPOLATION)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_DEBUG_INTERPOLATION=1)
+endif()
+
+if (GLOBED_DEBUG_PACKETS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_DEBUG_PACKETS=1)
+endif()
+
+if (GLOBED_DEBUG_PACKETS_PRINT)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_DEBUG_PACKETS_PRINT=1)
+endif()
+
+if (GLOBED_LESS_BINDINGS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_LESS_BINDINGS=1)
+endif()
+
+if (GLOBED_GP_CHANGES)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_GP_CHANGES=1)
+endif()
+
+if (GLOBED_LINK_TO_FMOD)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_LINK_TO_FMOD=1)
+endif()
+
+if (GLOBED_LINK_TO_FMOD AND NOT GLOBED_DISABLE_VOICE_SUPPORT)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_VOICE_SUPPORT=1)
+
+    if (WIN32)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE GLOBED_VOICE_CAN_TALK=1)
+    endif()
+endif()
 
 # Debug/Release options
 if (GLOBED_IS_DEBUG)
@@ -107,12 +152,12 @@ add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 CPMAddPackage("gh:dankmeme01/uibuilder#456706b")
 CPMAddPackage(
     NAME Boost
-    VERSION 1.86.0
-    URL https://github.com/boostorg/boost/releases/download/boost-1.86.0/boost-1.86.0-cmake.7z
-    URL_HASH SHA256=ee6e0793b5ec7d13e7181ec05d3b1aaa23615947295080e4b9930324488e078f
+    VERSION 1.88.0
+    URL https://github.com/boostorg/boost/releases/download/boost-1.88.0/boost-1.88.0-cmake.7z
+    URL_HASH SHA256=feba537f6d32c062ed0f26b4d6e5b8e8450d51ef81492369a101ab99fcead278
     OPTIONS "BOOST_ENABLE_CMAKE ON" "BOOST_INCLUDE_LIBRARIES describe" # escape with \\\;
 )
-CPMAddPackage("gh:dankmeme01/asp2#d7a31b6")
+CPMAddPackage("gh:dankmeme01/asp2#e422b95")
 
 # defines for asp (std::format is only available on windows currently)
 if (WIN32)
@@ -263,7 +308,6 @@ elseif (WIN32)
 elseif (ANDROID)
     target_link_libraries(${PROJECT_NAME} android)
 endif()
-
 
 # link to bb
 if (GLOBED_OSS_BUILD OR GLOBED_IOS)

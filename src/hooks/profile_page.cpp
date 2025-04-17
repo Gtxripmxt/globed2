@@ -1,6 +1,6 @@
 #include "profile_page.hpp"
 
-#ifndef GLOBED_DISABLE_EXTRA_HOOKS
+#ifndef GLOBED_LESS_BINDINGS
 
 #include <managers/admin.hpp>
 #include <net/manager.hpp>
@@ -12,12 +12,15 @@ void GlobedProfilePage::loadPageFromUserInfo(GJUserScore* score) {
 
 	if (!AdminManager::get().canModerate()) return;
 
-	if (!this->getChildByIDRecursive("left-menu")) return;
-
 	auto leftMenu = static_cast<CCMenu*>(this->getChildByIDRecursive("left-menu"));
 
-	auto iconData = PlayerIconData {};
-	auto player = PlayerAccountData {
+	// don't add if the menu doesn't exist, or if the button already exists
+	if (!leftMenu || leftMenu->getChildByID("admin-button"_spr)) {
+		return;
+	}
+
+	PlayerIconData iconData{};
+	PlayerAccountData player {
 		score->m_accountID,
 		score->m_userID,
 		score->m_userName,
@@ -43,4 +46,4 @@ void GlobedProfilePage::loadPageFromUserInfo(GJUserScore* score) {
 	leftMenu->updateLayout();
 }
 
-#endif // GLOBED_DISABLE_EXTRA_HOOKS
+#endif // GLOBED_LESS_BINDINGS

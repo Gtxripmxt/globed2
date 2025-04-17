@@ -10,6 +10,8 @@
 #include "privacy_settings_popup.hpp"
 #include <data/packets/server/room.hpp>
 #include <data/packets/client/admin.hpp>
+#include <data/packets/server/general.hpp>
+#include <data/packets/client/general.hpp>
 #include <net/manager.hpp>
 #include <managers/admin.hpp>
 #include <managers/error_queues.hpp>
@@ -17,6 +19,8 @@
 #include <managers/friend_list.hpp>
 #include <managers/settings.hpp>
 #include <managers/room.hpp>
+#include <managers/central_server.hpp>
+#include <managers/popup_queue.hpp>
 #include <ui/general/ask_input_popup.hpp>
 #include <ui/ui.hpp>
 #include <util/ui.hpp>

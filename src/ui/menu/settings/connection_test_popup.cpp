@@ -17,6 +17,8 @@
 #include <util/ui.hpp>
 #include <ui/general/ask_input_popup.hpp>
 
+#include <asp/net/IpAddress.hpp>
+
 using namespace geode::prelude;
 using namespace asp::time;
 using namespace util::rng;
@@ -135,6 +137,10 @@ bool ConnectionTestPopup::setup() {
     this->setTitle("Connection test");
     this->usedCentralUrl = globed::string<"main-server-url">();
 
+    // Backup game servers
+    auto& gsm = GameServerManager::get();
+    gsm.backupInternalData();
+
     auto& gs = GlobedSettings::get();
 
     auto override = Mod::get()->getSavedValue<std::string>(URL_OVERRIDE_KEY);
@@ -154,6 +160,7 @@ bool ConnectionTestPopup::setup() {
 
     // make the test list
     Build(GlobedListLayer<StatusCell>::createForComments(LIST_WIDTH, POPUP_HEIGHT * 0.7f))
+        .visible(false)
         .parent(m_mainLayer)
         .pos(rlayout.fromCenter(0.f, -10.f))
         .store(list);
@@ -173,7 +180,18 @@ bool ConnectionTestPopup::setup() {
         this->list->setVisible(!on);
         this->logList->setVisible(on);
     }))
-        .pos(rlayout.fromTopRight(32.f, 20.f))
+        .pos(rlayout.fromTopRight(24.f, 20.f))
+        .visible(false)
+        .store(logToggler)
+        .parent(m_buttonMenu);
+
+    // button to start testing
+    Build(ButtonSprite::create("Start", "bigFont.fnt", "GJ_button_01.png", 0.8f))
+        .intoMenuItem([this](auto dabutton) {
+            dabutton->setVisible(false);
+            this->startTesting();
+        })
+        .pos(rlayout.center)
         .parent(m_buttonMenu);
 
     if (gs.launchArgs().devStuff) {
@@ -203,7 +221,8 @@ bool ConnectionTestPopup::setup() {
                     );
                 }, 80, "Server URL", util::misc::STRING_URL)->show();
             })
-            .pos(rlayout.fromTopRight(64.f, 20.f))
+            .pos(rlayout.fromTopRight(24.f, 20.f))
+            .store(pencilBtn)
             .parent(m_buttonMenu);
 
         pencil->setScale(pencil->getScale() * 0.9f); // needed!
@@ -228,12 +247,12 @@ bool ConnectionTestPopup::setup() {
     });
 
     ghttpTest = this->addTest("Google HTTP Test", [](Test* test) {
-        test->logInfo("Sending a HEAD request to https://google.com");
+        test->logInfo("Sending a HEAD request to Google");
 
         auto task = WebRequestManager::get().testGoogle();
 
         while (task.isPending()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
         }
 
         auto val = task.getFinishedValue();
@@ -251,13 +270,16 @@ bool ConnectionTestPopup::setup() {
         test->finish();
     });
 
-    // this string is compile-time, so this is ok
     std::string_view srvdomain = usedCentralUrl;
 
     if (srvdomain.starts_with("https://")) {
         srvdomain.remove_prefix(sizeof("https://") - 1);
     } else if (srvdomain.starts_with("http://")) {
         srvdomain.remove_prefix(sizeof("http://") - 1);
+    }
+
+    while (srvdomain.ends_with('/')) {
+        srvdomain.remove_prefix(1);
     }
 
     // let's not try to dns query an ip address
@@ -274,6 +296,65 @@ bool ConnectionTestPopup::setup() {
             } else {
                 test->fail(fmt::format("Failed to resolve {}: {}", srvdomain, res.unwrapErr()));
             }
+        });
+
+        traceTest = this->addTest("CF Trace Test", [srvdomain](Test* test) {
+            test->logInfo(fmt::format("Retrieving cloudflare trace for domain {}", srvdomain));
+
+            auto task = WebRequestManager::get().testCloudflareDomainTrace(srvdomain);
+
+            while (task.isPending()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+
+            auto val = task.getFinishedValue();
+            if (!val) {
+                test->fail("Task returned no value");
+                return;
+            }
+
+            if (!val->ok()) {
+                test->fail(fmt::format("Connection to cloudflare failed: {}", val->getError()));
+                return;
+            }
+
+            auto text = val->text().unwrapOrDefault();
+            auto lines = util::format::split(text, "\n");
+
+            std::string_view datacenter, loc, tls;
+            std::string ip;
+            for (auto line : lines) {
+                if (line.starts_with("colo=")) {
+                    line.remove_prefix(5);
+                    datacenter = line;
+                } else if (line.starts_with("loc=")) {
+                    line.remove_prefix(4);
+                    loc = line;
+                } else if (line.starts_with("tls=")) {
+                    line.remove_prefix(4);
+                    tls = line;
+                } else if (line.starts_with("ip=")) {
+                    line.remove_prefix(3);
+                    ip = line;
+                }
+            }
+
+            // some users might not want their ip in logs /shrug
+            if (!ip.empty()) {
+                auto res = asp::net::Ipv4Address::tryFromString(ip);
+                if (res) {
+                    auto octets = res.unwrap().octets();
+                    ip = fmt::format("{}.{}.x.x", octets[0], octets[1]);
+                } else {
+                    log::warn("Failed to parse IP: error {}", (int) res.unwrapErr());
+                    ip = "<invalid>";
+                }
+            }
+
+            test->logTrace(fmt::format("CF datacenter={}, loc={}, tls={}, ip={}", datacenter, loc, tls, ip));
+
+            test->logInfo("Request was successful!");
+            test->finish();
         });
     }
 
@@ -415,10 +496,6 @@ bool ConnectionTestPopup::setup() {
         test->running = false;
     });
 
-    this->startedTestingAt = Instant::now();
-
-    workThread.start();
-
     return true;
 }
 
@@ -535,6 +612,11 @@ void ConnectionTestPopup::queueGameServerTests() {
 }
 
 void ConnectionTestPopup::queuePacketLimitTest(const NetworkAddress& addr) {
+    // don't add it twice
+    if (this->packetTest) {
+        return;
+    }
+
     packetTest = this->addTest("Packet Limit Test", [addr = addr](Test* test) {
         GameSocket sock;
 
@@ -552,12 +634,12 @@ void ConnectionTestPopup::queuePacketLimitTest(const NetworkAddress& addr) {
             2000,
             4000,
             7000,
-            10000,
-            15000,
-            20000,
-            30000,
-            40000,
-            50000,
+            9500,
+            14800,
+            19800,
+            29800,
+            39800,
+            49800,
             60000,
         });
 
@@ -620,8 +702,8 @@ void ConnectionTestPopup::queuePacketLimitTest(const NetworkAddress& addr) {
                 clientpkt->uid = Random::get().generate<uint32_t>();
                 auto res = sock.sendPacketUDP(pkt);
                 if (!res) {
-                    test->fail(fmt::format("Fatal error, TCP send failed (attempt {}): {}", att, res.unwrapErr()));
-                    return;
+                    test->fail(fmt::format("Attempt {} failed: udp send failed: {}", att, res.unwrapErr()));
+                    continue;
                 }
 
                 auto res2 = waitForPacketOn<ConnectionTestResponsePacket>(sock, Protocol::Udp);
@@ -759,7 +841,7 @@ void ConnectionTestPopup::showVerdictPopup() {
         openLink = true;
     } else if (srvListTest->didNotSucceed()) {
         content = "The Globed server failed to properly respond with the server list. This should never happen.";
-    } else if (packetTest->didNotSucceed()) {
+    } else if (packetTest && packetTest->didNotSucceed()) {
         content = "An error happened during the <cy>packet limit test</c>, meaning a potential issue with your <co>firewall</c> or <cg>router</c>. Try manually setting the packet limit to <cy>1400</c> in settings.";
     } else if (anyFailed) {
         // game server test failed?
@@ -776,6 +858,23 @@ void ConnectionTestPopup::showVerdictPopup() {
                 geode::utils::web::openLinkInBrowser(url);
             }
         });
+    }
+}
+
+void ConnectionTestPopup::startTesting() {
+    if (!workThread.isStopped()) {
+        ErrorQueues::get().warn("Attempting to call startTesting more than once");
+        return;
+    }
+
+    this->startedTestingAt = Instant::now();
+    workThread.start();
+    hasBeenStarted = true;
+    list->setVisible(true);
+    logToggler->setVisible(true);
+
+    if (pencilBtn) {
+        pencilBtn->setVisible(false);
     }
 }
 
@@ -815,12 +914,10 @@ void ConnectionTestPopup::update(float dt) {
 }
 
 void ConnectionTestPopup::onClose(cocos2d::CCObject* o) {
-    if (reallyClose) {
-        if (actuallyReallyClose || threadTerminated) {
+    if (reallyClose || !hasBeenStarted) {
+        if (actuallyReallyClose || threadTerminated || !hasBeenStarted) {
             auto& gsm = GameServerManager::get();
-            gsm.clear();
-            gsm.clearCache();
-            gsm.clearActive();
+            gsm.restoreInternalData();
             Popup::onClose(o);
             return;
         }
